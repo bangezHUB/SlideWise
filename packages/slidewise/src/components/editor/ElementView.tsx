@@ -1130,6 +1130,13 @@ function LineView({ el }: { el: LineElement }) {
   const hasStart = !!el.startArrow && el.startArrow !== "none";
   const hasEnd = !!el.endArrow && el.endArrow !== "none";
   const perEnd = hasStart || hasEnd;
+  // The legacy end triangle is 18 long: stop the line where the head begins so
+  // the line doesn't show through its tip.
+  const legacyHead = !!el.arrow && !perEnd;
+  const lineLen = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const headBack = Math.min(14, lineLen);
+  const lineEndX = x2 - ((x2 - x1) / lineLen) * headBack;
+  const lineEndY = y2 - ((y2 - y1) / lineLen) * headBack;
   return (
     <svg
       viewBox={`0 0 ${aw} ${ah}`}
@@ -1151,8 +1158,8 @@ function LineView({ el }: { el: LineElement }) {
         markerEnd={hasEnd ? `url(#${endId})` : undefined}
         x1={x1}
         y1={y1}
-        x2={x2}
-        y2={y2}
+        x2={legacyHead ? lineEndX : x2}
+        y2={legacyHead ? lineEndY : y2}
         stroke={el.stroke}
         strokeWidth={el.strokeWidth}
         strokeDasharray={
@@ -1253,7 +1260,9 @@ function ArrowMarker({
     <marker
       id={id}
       viewBox="0 0 10 10"
-      refX={centred ? 5 : 9}
+      // Pointed heads: the line ends inside the head, where it is still wider
+      // than the stroke, so no line pokes out of the tip.
+      refX={centred ? 5 : 8}
       refY="5"
       markerWidth="7"
       markerHeight="7"

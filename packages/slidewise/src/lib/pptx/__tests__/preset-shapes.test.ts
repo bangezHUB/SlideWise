@@ -47,6 +47,10 @@ describe("pptx importer — preset shape outlines", () => {
     "cloud",
     "wedgeRectCallout",
     "wedgeRoundRectCallout",
+    "octagon",
+    "parallelogram",
+    "trapezoid",
+    "plus",
   ]) {
     it(`gives ${prst} its own outline`, async () => {
       const el = await shapeFor(prst);

@@ -76,6 +76,62 @@ function hexagon(prstGeom: any, W: number, H: number): string {
   return polygon([[0, H / 2], [x1, y1], [x2, y1], [W, H / 2], [x2, y2], [x1, y2]]);
 }
 
+function octagon(prstGeom: any, W: number, H: number): string {
+  const ss = Math.min(W, H);
+  const a = Math.max(0, Math.min(50000, readAdj(prstGeom, "adj", 29289)));
+  const x = (ss * a) / 100000;
+  return polygon([
+    [0, x], [x, 0], [W - x, 0], [W, x], [W, H - x], [W - x, H], [x, H], [0, H - x],
+  ]);
+}
+
+function parallelogram(prstGeom: any, W: number, H: number): string {
+  const ss = Math.min(W, H);
+  const a = Math.max(0, Math.min((100000 * W) / ss, readAdj(prstGeom, "adj", 25000)));
+  const x = Math.min(W * 0.9, (ss * a) / 100000);
+  return polygon([[0, H], [x, 0], [W, 0], [W - x, H]]);
+}
+
+function trapezoid(prstGeom: any, W: number, H: number): string {
+  const ss = Math.min(W, H);
+  const a = Math.max(0, Math.min((50000 * W) / ss, readAdj(prstGeom, "adj", 25000)));
+  const x = (ss * a) / 100000;
+  return polygon([[0, H], [x, 0], [W - x, 0], [W, H]]);
+}
+
+function plus(prstGeom: any, W: number, H: number): string {
+  const ss = Math.min(W, H);
+  const a = Math.max(0, Math.min(50000, readAdj(prstGeom, "adj", 25000)));
+  const x = (ss * a) / 100000;
+  return polygon([
+    [x, 0], [W - x, 0], [W - x, x], [W, x], [W, H - x], [W - x, H - x],
+    [W - x, H], [x, H], [x, H - x], [0, H - x], [0, x], [x, x],
+  ]);
+}
+
+/** Cardinal block arrows: `adj1` = shaft thickness, `adj2` = head length (of the shorter side). */
+function blockArrow(prstGeom: any, preset: string, W: number, H: number): string {
+  const ss = Math.min(W, H);
+  const a1 = Math.max(0, Math.min(100000, readAdj(prstGeom, "adj1", 50000)));
+  const a2 = Math.max(0, Math.min(100000, readAdj(prstGeom, "adj2", 50000)));
+  const half = (ss * a1) / 200000;
+  const head = Math.min((ss * a2) / 100000, preset === "upArrow" || preset === "downArrow" ? H : W);
+  if (preset === "downArrow" || preset === "upArrow") {
+    const x1 = W / 2 - half;
+    const x2 = W / 2 + half;
+    const y1 = preset === "downArrow" ? H - head : head;
+    return preset === "downArrow"
+      ? polygon([[x1, 0], [x1, y1], [0, y1], [W / 2, H], [W, y1], [x2, y1], [x2, 0]])
+      : polygon([[x1, H], [x1, y1], [0, y1], [W / 2, 0], [W, y1], [x2, y1], [x2, H]]);
+  }
+  const y1 = H / 2 - half;
+  const y2 = H / 2 + half;
+  const x1 = preset === "rightArrow" ? W - head : head;
+  return preset === "rightArrow"
+    ? polygon([[0, y1], [x1, y1], [x1, 0], [W, H / 2], [x1, H], [x1, y2], [0, y2]])
+    : polygon([[W, y1], [x1, y1], [x1, 0], [0, H / 2], [x1, H], [x1, y2], [W, y2]]);
+}
+
 function lightningBolt(W: number, H: number): string {
   const pts: Pt[] = [
     [8472, 0], [12860, 6080], [11050, 6797], [16577, 12007], [14767, 12877],
@@ -192,6 +248,24 @@ export function buildPresetShapePath(
       break;
     case "lightningBolt":
       d = lightningBolt(W, H);
+      break;
+    case "octagon":
+      d = octagon(prstGeom, W, H);
+      break;
+    case "parallelogram":
+      d = parallelogram(prstGeom, W, H);
+      break;
+    case "trapezoid":
+      d = trapezoid(prstGeom, W, H);
+      break;
+    case "plus":
+      d = plus(prstGeom, W, H);
+      break;
+    case "rightArrow":
+    case "leftArrow":
+    case "upArrow":
+    case "downArrow":
+      d = blockArrow(prstGeom, preset, W, H);
       break;
     case "moon":
       d = moon(prstGeom, W, H);

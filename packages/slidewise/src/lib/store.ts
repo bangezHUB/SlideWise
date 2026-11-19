@@ -45,6 +45,8 @@ export interface EditorState {
   currentSlideId: string;
   selectedIds: string[];
   tool: Tool;
+  /** Variant chosen for the active insert tool (a shape / line / icon id from `insertCatalog`). */
+  toolOption: string | null;
   zoom: number;
   fitMode: "fit" | "fill" | "manual";
   playing: boolean;
@@ -65,7 +67,7 @@ export interface EditorState {
   currentSlide: () => Slide;
 
   // actions
-  setTool: (t: Tool) => void;
+  setTool: (t: Tool, option?: string | null) => void;
   setTitle: (t: string) => void;
   setZoom: (z: number) => void;
   /** Multiplicative zoom-in step (×1.25), clamped to the same range as setZoom. */
@@ -142,6 +144,7 @@ export function createEditorStore(initialDeck: Deck): EditorStore {
     currentSlideId: firstSlideId,
     selectedIds: [],
     tool: "select",
+    toolOption: null,
     zoom: 0.6,
     fitMode: "fit",
     playing: false,
@@ -193,7 +196,7 @@ export function createEditorStore(initialDeck: Deck): EditorStore {
     canUndo: () => get().history.length > 0,
     canRedo: () => get().future.length > 0,
 
-    setTool: (t) => set({ tool: t }),
+    setTool: (t, option) => set({ tool: t, toolOption: option ?? null }),
     setTitle: (t) => {
       get().pushHistoryCoalesced("setTitle");
       set((s) => ({ deck: { ...s.deck, title: t } }));

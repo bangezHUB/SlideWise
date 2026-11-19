@@ -5323,14 +5323,10 @@ function mapPrstToKind(prst?: string): ShapeKind | null {
     case "star32":
       return "star";
     // Loose mappings — preserve visibility with the closest available kind.
-    case "parallelogram":
-    case "trapezoid":
     case "pentagon":
-    case "octagon":
     case "heptagon":
     case "decagon":
     case "dodecagon":
-    case "plus":
     case "cube":
     case "can":
     // NOTE: the cardinal block arrows (left/right/up/downArrow) are

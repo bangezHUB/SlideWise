@@ -13,7 +13,16 @@ import {
   ArrowUpToLine,
   ArrowDownToLine,
   AlignVerticalJustifyCenter,
+  Shapes,
+  Spline,
 } from "lucide-react";
+import {
+  SHAPE_OPTIONS,
+  LINE_OPTIONS,
+  shapePreviewPath,
+  shapeChangePatch,
+  lineChangePatch,
+} from "@/lib/insertCatalog";
 import type { SlideElement } from "@/lib/types";
 import { useEditor } from "@/lib/StoreProvider";
 
@@ -280,6 +289,20 @@ export function FloatingToolbar({
               onChange={(c) => updateElement(element.id, { fill: c })}
             />
             <Sep />
+            <Menu
+              label="Shape type"
+              icon={<Shapes size={15} />}
+              options={SHAPE_OPTIONS.map((o) => ({
+                label: o.label,
+                icon: (
+                  <svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+                    <path d={shapePreviewPath(o, 20, 14)} transform="translate(1 1)" fill="currentColor" fillOpacity="0.25" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                  </svg>
+                ),
+                onClick: () => updateElement(element.id, shapeChangePatch(o.id, element)),
+              }))}
+            />
+            <Sep />
             <NumberInput
               label="Corner radius"
               value={element.radius ?? 0}
@@ -317,6 +340,15 @@ export function FloatingToolbar({
               onChange={(v) => updateElement(element.id, { strokeWidth: v })}
               suffix="w"
               width={56}
+            />
+            <Sep />
+            <Menu
+              label="Line style"
+              icon={<Spline size={15} />}
+              options={LINE_OPTIONS.map((o) => ({
+                label: o.label,
+                onClick: () => updateElement(element.id, lineChangePatch(o.id)),
+              }))}
             />
             <Sep />
           </>
@@ -686,6 +718,8 @@ function Menu({
               boxShadow: "var(--menu-shadow)",
               zIndex: 41,
               minWidth: 160,
+              maxHeight: 320,
+              overflowY: "auto",
               color: "var(--ink)",
             }}
           >

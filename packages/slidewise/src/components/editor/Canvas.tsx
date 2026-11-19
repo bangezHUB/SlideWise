@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEditor, useEditorStore } from "@/lib/StoreProvider";
 import type { Tool } from "@/lib/store";
 import { SLIDE_W, SLIDE_H, type SlideElement, type ElementDraft } from "@/lib/types";
+import { slidePressAction, SLIDE_LAYER_ATTR } from "@/lib/canvasHit";
+import { pickImageFile, fitImageBox } from "@/lib/pickImage";
+import { shapeDraft, lineDraft, iconDraft } from "@/lib/insertCatalog";
 import { ElementView } from "./ElementView";
 import { SelectionFrame } from "./SelectionFrame";
 import { FloatingToolbar } from "./FloatingToolbar";
@@ -16,6 +19,7 @@ export function Canvas() {
   const readOnly = useReadOnly();
   const slide = useEditor((s) => s.currentSlide());
   const tool = useEditor((s) => s.tool);
+  const toolOption = useEditor((s) => s.toolOption);
   const setTool = useEditor((s) => s.setTool);
   const zoom = useEditor((s) => s.zoom);
   const fitMode = useEditor((s) => s.fitMode);
@@ -167,7 +171,21 @@ export function Canvas() {
         w = defaultSize(tool).w;
         h = defaultSize(tool).h;
       }
-      const created = createDefault(tool, x, y, w, h);
+      if (tool === "image") {
+        // No stock photo: let the user pick a file and drop it in the box.
+        setDraftRect(null);
+        setTool("select");
+        void pickImageFile().then((picked) => {
+          if (!picked) return;
+          const fit = fitImageBox(picked, { w, h });
+          const draft = createDefault("image", x, y, fit.w, fit.h);
+          if (draft && draft.type === "image") {
+            addElement({ ...draft, src: picked.src, fit: "contain", radius: 0 });
+          }
+        });
+        return;
+      }
+      const created = createDefault(tool, x, y, w, h, toolOption);
       const wasText = tool === "text" || tool === "formula";
       if (created) {
         const newId = addElement(created);
@@ -248,10 +266,10 @@ export function Canvas() {
         ref={surfaceRef}
         onMouseDown={(e) => {
           if (readOnly) return;
-          if (e.target === e.currentTarget) {
-            clearSelection();
-            startCreate(e);
-          }
+          const action = slidePressAction(tool, e.target, e.currentTarget);
+          if (action === "none") return;
+          clearSelection();
+          if (action === "create") startCreate(e);
         }}
         style={{
           position: "absolute",
@@ -266,6 +284,7 @@ export function Canvas() {
         }}
       >
         <div
+          {...{ [SLIDE_LAYER_ATTR]: "1" }}
           style={{
             position: "absolute",
             inset: 0,
@@ -391,7 +410,8 @@ function createDefault(
   x: number,
   y: number,
   w: number,
-  h: number
+  h: number,
+  option: string | null = null
 ): ElementDraft | null {
   const base = {
     x: Math.round(x),
@@ -402,13 +422,7 @@ function createDefault(
   };
   switch (tool) {
     case "shape":
-      return {
-        ...base,
-        type: "shape",
-        shape: "rounded",
-        fill: "#4F5BD5",
-        radius: 16,
-      };
+      return shapeDraft(option, base);
     case "text":
       return {
         ...base,
@@ -427,13 +441,7 @@ function createDefault(
         letterSpacing: 0,
       };
     case "line":
-      return {
-        ...base,
-        h: Math.max(2, base.h),
-        type: "line",
-        stroke: "#0E1330",
-        strokeWidth: 4,
-      };
+      return lineDraft(option, base);
     case "image":
       return {
         ...base,
@@ -457,12 +465,7 @@ function createDefault(
         fontSize: 22,
       };
     case "icon":
-      return {
-        ...base,
-        type: "icon",
-        icon: "★",
-        color: "#4F5BD5",
-      };
+      return iconDraft(option, base);
     case "embed":
       return {
         ...base,

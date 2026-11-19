@@ -14,6 +14,7 @@ import type {
   IconElement,
   EmbedElement,
   ChartElement,
+  ArrowheadKind,
   ConnectorElement,
   GroupElement,
   DiagramElement,
@@ -860,11 +861,17 @@ function addLine(
         color: hexNoHash(el.stroke),
         width: el.strokeWidth,
         dashType: lineDashType(el),
-        endArrowType: el.arrow ? "triangle" : "none",
+        beginArrowType: lineArrowType(el.startArrow),
+        endArrowType: el.endArrow ? lineArrowType(el.endArrow) : el.arrow ? "triangle" : "none",
       },
       objectName: slidewiseShapeName(el.id),
     }
   );
+}
+
+/** ArrowheadKind → pptxgenjs `beginArrowType` / `endArrowType` value. */
+function lineArrowType(kind: ArrowheadKind | undefined): "none" | "arrow" | "diamond" | "oval" | "stealth" | "triangle" {
+  return kind ?? "none";
 }
 
 function addTable(s: pptxgen.Slide, el: TableElement): void {
