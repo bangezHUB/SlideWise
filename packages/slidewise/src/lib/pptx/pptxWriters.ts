@@ -893,7 +893,9 @@ export function synthesiseImage(el: ImageElement): SynthShapeResult | null {
   // The picture fill wrapper for `<p:pic>` is `<p:blipFill>` (presentationml),
   // not `<a:blipFill>` — its inner blip / srcRect / stretch stay in `a:`.
   const fill =
-    `<p:blipFill><a:blip r:embed="${ridMarker}"/>` +
+    (el.opacity !== undefined && el.opacity < 1
+      ? `<p:blipFill><a:blip r:embed="${ridMarker}"><a:alphaModFix amt="${Math.round(Math.max(0, el.opacity) * 100000)}"/></a:blip>`
+      : `<p:blipFill><a:blip r:embed="${ridMarker}"/>`) +
     srcRect +
     `<a:stretch><a:fillRect/></a:stretch></p:blipFill>`;
   const geom = imageGeometryXml(el.radius, el.w, el.h);

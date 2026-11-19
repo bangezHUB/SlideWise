@@ -188,6 +188,7 @@ export type {
   EmbedElement,
   ChartElement,
   ChartKind,
+  SlideTransition,
   ChartGrouping,
   ChartSeries,
   ChartSeriesKind,

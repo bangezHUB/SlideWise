@@ -10,6 +10,9 @@ import type {
   ShapeElement,
   ShapeKind,
   ShapePath,
+  ShadowSpec,
+  ArrowheadKind,
+  SlideTransition,
   ImageElement,
   LineElement,
   TableElement,
@@ -32,6 +35,7 @@ import type {
 import { SLIDE_W, SLIDE_H } from "@/lib/types";
 import { CURRENT_DECK_VERSION } from "@/lib/schema/migrate";
 import { emuToPx, pointsToPx } from "./units";
+import { buildPresetShapePath } from "./presetShapes";
 import type { ParseDiagnostics } from "./types";
 
 /**
@@ -887,11 +891,67 @@ async function parseSlide(
     }
   }
 
+  const showAttr = sld?.["@_show"];
+  const hidden = showAttr === "0" || showAttr === "false" || showAttr === 0;
+  const notes = await readSlideNotes(zip, slidePath, slideRels);
+  const transition = readTransition(sld);
   return {
     id: slideId,
     background,
     elements,
+    ...(hidden ? { hidden: true } : {}),
+    ...(notes ? { notes } : {}),
+    ...(transition ? { transition } : {}),
   };
+}
+
+/**
+ * `<p:transition>` of a slide, directly under `<p:sld>` or inside the
+ * `mc:AlternateContent` PowerPoint wraps newer transitions in. The transition
+ * kind is the name of its first child element (`p:push`, `p14:vortex`, …).
+ */
+function readTransition(sld: any): SlideTransition | undefined {
+  const node =
+    sld?.["p:transition"] ??
+    asArray(sld?.["mc:AlternateContent"])
+      .map((ac: any) => asArray(ac?.["mc:Choice"])[0]?.["p:transition"] ?? ac?.["mc:Fallback"]?.["p:transition"])
+      .find(Boolean);
+  if (!node || typeof node !== "object") return undefined;
+  const key = Object.keys(node).find((k) => !k.startsWith("@_") && k !== "p:sndAc" && k !== "p:extLst" && k !== "#text");
+  if (!key) return undefined;
+  const child = node[key];
+  const dir = typeof child === "object" ? child?.["@_dir"] : undefined;
+  const spd = node["@_spd"];
+  return {
+    type: key.replace(/^[a-z0-9]+:/i, ""),
+    ...(dir === "l" || dir === "r" || dir === "u" || dir === "d" ? { direction: dir } : {}),
+    ...(spd === "slow" || spd === "med" || spd === "fast" ? { speed: spd } : {}),
+  };
+}
+
+/** Plain text of the notes page's body placeholder, one line per paragraph. */
+async function readSlideNotes(
+  zip: JSZip,
+  slidePath: string,
+  slideRels: Rels
+): Promise<string | undefined> {
+  const target = firstByType(slideRels, "notesSlide");
+  if (!target) return undefined;
+  const notesXml = await readXml(zip, normalisePath(target, dirOf(slidePath)));
+  const shapes = asArray(notesXml?.["p:notes"]?.["p:cSld"]?.["p:spTree"]?.["p:sp"]);
+  const body = shapes.find(
+    (sp: any) => sp?.["p:nvSpPr"]?.["p:nvPr"]?.["p:ph"]?.["@_type"] === "body"
+  );
+  if (!body) return undefined;
+  const lines = asArray(body?.["p:txBody"]?.["a:p"]).map((p: any) => {
+    const runs = asArray(p?.["a:r"]).map((r: any) => {
+      const t = r?.["a:t"];
+      return typeof t === "string" ? t : (t?.["#text"] ?? "");
+    });
+    return decodeXmlEntities(runs.join(""));
+  });
+  const text = lines.join("\n").trim();
+  return text || undefined;
 }
 
 /**
@@ -1393,6 +1453,18 @@ async function parseSpOrText(
   if (!customPath && geom && presetName === "cube") {
     customPath = buildCubePath(prstGeom, geom.w, geom.h, flipH, flipV);
   }
+  // Hexagon, moon, heart, lightning bolt, cloud and the wedge callouts have
+  // no matching ShapeKind; give them their own outline (see presetShapes.ts).
+  if (!customPath && geom) {
+    customPath = buildPresetShapePath(
+      presetName,
+      prstGeom,
+      geom.w,
+      geom.h,
+      flipH,
+      flipV
+    );
+  }
   // Ellipse/circle: synthesise the silhouette so a text-bearing oval (central
   // hub of a process diagram, lozenge labels, etc.) keeps its rounded shape
   // when isText routes it through the text branch. Without a backing path,
@@ -1556,6 +1628,7 @@ async function parseSpOrText(
       ? strokeDashRaw
       : undefined;
 
+  const outerShadow = parseOuterShadow(spPr?.["a:effectLst"], ctx);
   const kind = mapPrstToKind(presetName);
   if (!kind) {
     // Fall back to a rect with the shape's fill so it remains visible at the
@@ -1576,6 +1649,7 @@ async function parseSpOrText(
         : undefined,
       strokeDash,
       ...(customPath ? { path: customPath } : {}),
+      ...(outerShadow ? { shadow: outerShadow } : {}),
     };
     return fallback;
   }
@@ -1606,8 +1680,30 @@ async function parseSpOrText(
       : undefined,
     strokeDash,
     radius,
+    ...(outerShadow ? { shadow: outerShadow } : {}),
   };
   return shape;
+}
+
+/**
+ * `<a:effectLst><a:outerShdw>` → ShadowSpec: blur and distance (EMU) become
+ * canvas pixels, `dir` (60000ths of a degree, clockwise from the x axis) splits
+ * the distance into x / y offsets, and the colour keeps its alpha.
+ */
+function parseOuterShadow(effectLst: any, ctx: ParseContext): ShadowSpec | undefined {
+  const sh = effectLst?.["a:outerShdw"];
+  if (!sh) return undefined;
+  const px = (emu: unknown) => emuToPx(Number(emu ?? 0)) * ctx.fit.scale;
+  const blur = px(sh["@_blurRad"]);
+  const dist = px(sh["@_dist"]);
+  const dir = (Number(sh["@_dir"] ?? 0) / 60000) * (Math.PI / 180);
+  const color = resolveColor(sh, ctx.theme) ?? "#00000040";
+  return {
+    color,
+    blur: Math.round(blur * 100) / 100,
+    offsetX: Math.round(dist * Math.cos(dir) * 100) / 100,
+    offsetY: Math.round(dist * Math.sin(dir) * 100) / 100,
+  };
 }
 
 function makeTextElement(
@@ -1747,6 +1843,7 @@ function makeTextElement(
       : undefined,
     highlight: r.highlight,
     cap: r.cap,
+    baseline: r.baseline,
   }));
   const hasMixedFormatting = runs.length > 1 && runs.some((r, i) => {
     if (i === 0) return false;
@@ -1760,13 +1857,14 @@ function makeTextElement(
       a.underline !== r.underline ||
       a.strike !== r.strike ||
       a.highlight !== r.highlight ||
-      a.cap !== r.cap
+      a.cap !== r.cap ||
+      a.baseline !== r.baseline
     );
   });
-  // highlight / cap have no flat TextElement field, so they'd be lost when runs
-  // aren't emitted (single run, or uniform formatting). Force the rich-run
-  // representation whenever any run carries one.
-  const hasHighlight = runs.some((r) => r.highlight || r.cap);
+  // highlight / cap / baseline have no flat TextElement field, so they'd be
+  // lost when runs aren't emitted (single run, or uniform formatting). Force
+  // the rich-run representation whenever any run carries one.
+  const hasHighlight = runs.some((r) => r.highlight || r.cap || r.baseline);
 
   const el: TextElement = {
     id: nanoid(8),
@@ -1793,6 +1891,9 @@ function makeTextElement(
     // substitute font measures wider than the original. Restricted to SHORT
     // single-line labels: a long autofit paragraph (a content placeholder)
     // genuinely wraps within its fixed width and must keep wrapping.
+    ...(verticalFromBodyPr(bodyPrForWrap?.["@_vert"])
+      ? { vertical: verticalFromBodyPr(bodyPrForWrap?.["@_vert"]) }
+      : {}),
     ...((bodyPrForWrap?.["a:spAutoFit"] !== undefined ||
       bodyPrForWrap?.["@_wrap"] === "none") &&
     !text.plain.includes("\n") &&
@@ -1835,6 +1936,7 @@ function makeTextElement(
             : undefined,
           highlight: r.highlight,
           cap: r.cap,
+          baseline: r.baseline,
         };
       });
       return {
@@ -2033,6 +2135,14 @@ async function parsePic(
     if (r > 0) radius = r;
   }
 
+  // Picture transparency: `<a:alphaModFix amt="N"/>` inside the blip keeps N
+  // thousandths of a percent of the opacity (100000 = fully opaque).
+  const alphaAmt = Number(blip?.["a:alphaModFix"]?.["@_amt"]);
+  const opacity =
+    Number.isFinite(alphaAmt) && alphaAmt >= 0 && alphaAmt < 100000
+      ? alphaAmt / 100000
+      : undefined;
+
   const image: ImageElement = {
     id: nanoid(8),
     type: "image",
@@ -2042,6 +2152,7 @@ async function parsePic(
     fit: fitMode,
     ...(hasCrop ? { crop } : {}),
     ...(radius ? { radius } : {}),
+    ...(opacity !== undefined ? { opacity } : {}),
   };
   return image;
 }
@@ -2272,8 +2383,21 @@ function makeLineFromGeometry(
     strokeWidth,
     dashed,
     arrow,
+    ...(arrowheadKind(headType) ? { startArrow: arrowheadKind(headType) } : {}),
+    ...(arrowheadKind(tailType) ? { endArrow: arrowheadKind(tailType) } : {}),
   };
   return line;
+}
+
+/** `<a:headEnd type>` / `<a:tailEnd type>` → ArrowheadKind (`none` / unknown → undefined). */
+function arrowheadKind(type: unknown): ArrowheadKind | undefined {
+  return type === "triangle" ||
+    type === "stealth" ||
+    type === "arrow" ||
+    type === "oval" ||
+    type === "diamond"
+    ? type
+    : undefined;
 }
 
 async function parseGraphicFrame(
@@ -2329,11 +2453,22 @@ function parseTable(
   outer: GroupTransform
 ): TableElement | null {
   const xfrm = gf?.["p:xfrm"] || gf?.["p:spPr"]?.["a:xfrm"];
-  const geom = readGeometry(xfrm, ctx.fit, outer);
-  if (!geom) return null;
-
   const trs = asArray(tbl["a:tr"]);
   if (!trs.length) return null;
+
+  // PowerPoint sizes a table from its rows (`<a:tr h>`) and ignores a smaller
+  // graphicFrame height (writers such as pptxgenjs emit a placeholder `cy`).
+  // Grow the frame to the row total so the rows aren't squeezed into it.
+  let frameXfrm = xfrm;
+  const trHeights = trs.map((tr: any) => Number(tr?.["@_h"]));
+  if (xfrm?.["a:ext"] && trHeights.every((h: number) => Number.isFinite(h) && h > 0)) {
+    const rowsEmu = trHeights.reduce((a: number, b: number) => a + b, 0);
+    if (rowsEmu > Number(xfrm["a:ext"]["@_cy"] ?? 0)) {
+      frameXfrm = { ...xfrm, "a:ext": { ...xfrm["a:ext"], "@_cy": rowsEmu } };
+    }
+  }
+  const geom = readGeometry(frameXfrm, ctx.fit, outer);
+  if (!geom) return null;
 
   // <a:tblPr> drives which style parts apply. Defaults match PowerPoint's
   // "Insert Table" behaviour: first row treated as header, no banding.
@@ -2451,6 +2586,7 @@ function parseTable(
           (r) =>
             r.highlight ||
             r.cap ||
+            r.baseline ||
             r.italic ||
             r.underline ||
             r.strike ||
@@ -2475,6 +2611,7 @@ function parseTable(
               : undefined,
             highlight: r.highlight,
             cap: r.cap,
+            baseline: r.baseline,
           }))
         );
       } else {
@@ -2649,6 +2786,9 @@ const CHART_TAG_TO_KIND: Record<string, ChartElement["kind"]> = {
   "c:doughnutChart": "doughnut",
   "c:areaChart": "area",
   "c:area3DChart": "area",
+  "c:scatterChart": "scatter",
+  "c:bubbleChart": "bubble",
+  "c:radarChart": "radar",
 };
 
 /**
@@ -2697,6 +2837,10 @@ async function parseLiveChart(
   const primary = plots[0];
   const kind = primary.kind;
   const isPieChart = kind === "pie" || kind === "doughnut";
+  const isXyChart = kind === "scatter" || kind === "bubble";
+  // Pie, scatter, bubble and radar plots can't share a plot area with other
+  // plots here, so only the first plot is read.
+  const isStandalone = isPieChart || isXyChart || kind === "radar";
   const plotNode = primary.node;
 
   const groupingVal = plotNode?.["c:grouping"]?.["@_val"];
@@ -2714,7 +2858,8 @@ async function parseLiveChart(
 
   // Categories come from the first series' <c:cat>; PPTX requires every
   // series to share the same category axis so this is safe.
-  const categories: string[] = extractCategories(sers[0]);
+  // Scatter / bubble charts have x values instead of categories.
+  const categories: string[] = isXyChart ? [] : extractCategories(sers[0]);
 
   // Axes by id. Each plot lists its axes in <c:axId> (category axis, value
   // axis); a plot whose value axis differs from the first plot's is drawn
@@ -2738,7 +2883,12 @@ async function parseLiveChart(
     // Pie / doughnut plots draw alone; any other plot in a combo must be an
     // axis plot (bar / column / line / area).
     const plotIsPie = plot.kind === "pie" || plot.kind === "doughnut";
-    if (plot !== primary && (isPieChart || plotIsPie)) continue;
+    const plotIsStandalone =
+      plotIsPie ||
+      plot.kind === "scatter" ||
+      plot.kind === "bubble" ||
+      plot.kind === "radar";
+    if (plot !== primary && (isStandalone || plotIsStandalone)) continue;
     const plotSers = asArray(plot.node["c:ser"]);
     const valAxisId = plotAxisId(plot.node, valAxes);
     const secondary =
@@ -2767,9 +2917,27 @@ async function parseLiveChart(
         plotIsPie ? color : undefined,
         ctx.theme
       );
+      const xyExtras = isXyChart
+        ? {
+            xValues: extractNumbers(ser?.["c:xVal"], values.length),
+            ...(kind === "bubble"
+              ? { sizes: extractNumbers(ser?.["c:bubbleSize"], values.length) }
+              : {}),
+            ...(scatterDrawsLines(plot.node, ser) ? { lines: true } : {}),
+          }
+        : {};
+      const lnEmu = Number(ser?.["c:spPr"]?.["a:ln"]?.["@_w"]);
+      const lineWidth =
+        (plot.kind === "line" || plot.kind === "scatter" || plot.kind === "radar") &&
+        Number.isFinite(lnEmu) &&
+        lnEmu > 0
+          ? Math.round(emuToPx(lnEmu) * ctx.fit.scale * 100) / 100
+          : undefined;
       series.push({
         name,
         values,
+        ...(lineWidth ? { lineWidth } : {}),
+        ...xyExtras,
         ...(color ? { color } : {}),
         ...(plot.kind !== kind ? { kind: plot.kind as ChartSeriesKind } : {}),
         ...(secondary ? { secondaryAxis: true } : {}),
@@ -2787,17 +2955,30 @@ async function parseLiveChart(
   }
   if (!series.length) return null;
 
-  const catAxisId = isPieChart ? undefined : plotAxisId(plotNode, catAxes);
+  const catAxisId = isStandalone ? undefined : plotAxisId(plotNode, catAxes);
   const categoryAxis = catAxisId ? readCategoryAxis(catAxes.get(catAxisId)) : undefined;
+  // Scatter / bubble plots list two value axes: x first, then y.
+  const xyAxisIds = isXyChart
+    ? asArray(plotNode?.["c:axId"])
+        .map((a: any) => String(a?.["@_val"]))
+        .filter((id: string) => valAxes.has(id))
+    : [];
+  const xAxis = xyAxisIds[0] ? readValueAxis(valAxes.get(xyAxisIds[0])) : undefined;
+  const valueAxisId = isXyChart ? xyAxisIds[1] : primaryValAxisId;
   const valueAxis =
-    !isPieChart && primaryValAxisId
-      ? readValueAxis(valAxes.get(primaryValAxisId))
-      : undefined;
+    !isPieChart && valueAxisId ? readValueAxis(valAxes.get(valueAxisId)) : undefined;
   const secondaryValueAxis = secondaryValAxisId
     ? readValueAxis(valAxes.get(secondaryValAxisId))
     : undefined;
 
   const title = extractChartTitle(chartXml?.["c:chartSpace"]?.["c:chart"]?.["c:title"]);
+  // A chart shows a legend only when it has a <c:legend> element.
+  const legendNode = chartXml?.["c:chartSpace"]?.["c:chart"]?.["c:legend"];
+  const legendPosRaw = legendNode?.["c:legendPos"]?.["@_val"];
+  const legendPosition: "t" | "b" | "l" | "r" | undefined =
+    legendPosRaw === "t" || legendPosRaw === "l" || legendPosRaw === "r"
+      ? legendPosRaw
+      : undefined;
   const ooxmlXml = xmlBuilder.build({ "p:graphicFrame": gf });
 
   const element: ChartElement = {
@@ -2814,6 +2995,12 @@ async function parseLiveChart(
     ...(valueFormat ? { valueFormat } : {}),
     ...(categoryAxis ? { categoryAxis } : {}),
     ...(valueAxis ? { valueAxis } : {}),
+    ...(xAxis ? { xAxis } : {}),
+    ...(legendNode === undefined ? { showLegend: false } : {}),
+    ...(legendPosition ? { legendPosition } : {}),
+    ...(kind === "radar" && plotNode?.["c:radarStyle"]?.["@_val"] === "filled"
+      ? { radarFilled: true }
+      : {}),
     ...(secondaryValueAxis ? { secondaryValueAxis } : {}),
     ooxmlXml,
   };
@@ -2864,7 +3051,21 @@ function extractSeriesName(ser: any): string {
 }
 
 function extractSeriesValues(ser: any, expected: number): (number | null)[] {
-  const val = ser?.["c:val"] ?? ser?.["c:yVal"];
+  return extractNumbers(ser?.["c:val"] ?? ser?.["c:yVal"], expected);
+}
+
+/** Does a scatter series join its points with a drawn line? */
+function scatterDrawsLines(plotNode: any, ser: any): boolean {
+  const style = plotNode?.["c:scatterStyle"]?.["@_val"];
+  if (typeof style !== "string" || !/line|smooth/i.test(style) || style === "marker") {
+    return false;
+  }
+  const ln = ser?.["c:spPr"]?.["a:ln"];
+  return !!ln && ln["a:noFill"] === undefined;
+}
+
+/** Numbers of a `<c:val>` / `<c:xVal>` / `<c:yVal>` / `<c:bubbleSize>` node. */
+function extractNumbers(val: any, expected: number): (number | null)[] {
   if (!val) return [];
   const cache =
     val?.["c:numRef"]?.["c:numCache"] ?? val?.["c:numLit"] ?? val?.["c:numCache"];
@@ -2909,8 +3110,11 @@ function extractSeriesColor(
   theme: ThemeColors
 ): string | undefined {
   const spPr = ser?.["c:spPr"];
+  const lineKind = kind === "line" || kind === "scatter" || kind === "radar";
   const explicitFill =
-    spPr?.["a:solidFill"] ?? (kind === "line" ? spPr?.["a:ln"]?.["a:solidFill"] : undefined);
+    (kind === "scatter" ? ser?.["c:marker"]?.["c:spPr"]?.["a:solidFill"] : undefined) ??
+    spPr?.["a:solidFill"] ??
+    (lineKind ? spPr?.["a:ln"]?.["a:solidFill"] : undefined);
   const idx = Number(ser?.["c:idx"]?.["@_val"] ?? 0);
   return resolveColor(explicitFill, theme) ?? seriesAccentColor(idx, theme);
 }
@@ -3373,7 +3577,8 @@ function layoutPhStyle(
   const algn = (info?.pPr as any)?.["@_algn"];
   if (algn === "ctr") out.align = "center";
   else if (algn === "r") out.align = "right";
-  else if (algn === "l" || algn === "just") out.align = "left";
+  else if (algn === "just") out.align = "justify";
+  else if (algn === "l") out.align = "left";
   return out;
 }
 
@@ -3961,11 +4166,12 @@ function readBodyVAlign(bodyPr: any): "top" | "middle" | "bottom" | undefined {
   return undefined;
 }
 
-function readAlign(pPr: any): "left" | "center" | "right" | undefined {
+function readAlign(pPr: any): "left" | "center" | "right" | "justify" | undefined {
   const a = pPr?.["@_algn"];
   if (a === "ctr") return "center";
   if (a === "r") return "right";
-  if (a === "l" || a === "just") return "left";
+  if (a === "just") return "justify";
+  if (a === "l") return "left";
   return undefined;
 }
 
@@ -4005,6 +4211,13 @@ function effectiveFontWeight(
   return undefined;
 }
 
+/** `<a:bodyPr vert>` → the text direction Slidewise can draw, if any. */
+function verticalFromBodyPr(vert: unknown): "vert" | "vert270" | undefined {
+  if (vert === "vert" || vert === "eaVert" || vert === "wordArtVert") return "vert";
+  if (vert === "vert270") return "vert270";
+  return undefined;
+}
+
 interface RunInfo {
   text: string;
   fontFamily?: string;
@@ -4018,12 +4231,13 @@ interface RunInfo {
   letterSpacing?: number;
   highlight?: string;
   cap?: "all" | "small";
+  baseline?: number;
 }
 
 interface ParagraphInfo {
   text: string;
   runs: RunInfo[];
-  align?: "left" | "center" | "right";
+  align?: "left" | "center" | "right" | "justify";
   marL?: number;
   indent?: number;
   /** `<a:spcBef><a:spcPts val="…"/>`: 100ths of a point. */
@@ -4042,12 +4256,12 @@ function extractRuns(
 ): {
   runs: RunInfo[];
   plain: string;
-  align?: "left" | "center" | "right";
+  align?: "left" | "center" | "right" | "justify";
   lineHeightPct?: number;
   paragraphs: ParagraphInfo[];
 } {
   const runs: RunInfo[] = [];
-  let align: "left" | "center" | "right" | undefined;
+  let align: "left" | "center" | "right" | "justify" | undefined;
   let lineHeightPct: number | undefined;
   const paragraphs = asArray(txBody?.["a:p"]);
   const pieces: string[] = [];
@@ -4197,7 +4411,29 @@ function extractRuns(
     const paraHasText = runs
       .slice(paraStart)
       .some((r) => r.text.trim().length > 0);
-    if (prefix.text && paraHasText && runs.length > paraStart) {
+    // `<a:buClr>` colours the glyph independently of the text: give the
+    // bullet its own run, sized like the first text run.
+    const bulletColor = resolveBulletColor([pPr, ...levelChain], theme);
+    if (prefix.text && paraHasText && runs.length > paraStart && bulletColor) {
+      const first = runs[paraStart];
+      runs.splice(paraStart, 0, {
+        text: prefix.text,
+        fontFamily: first.fontFamily,
+        fontSize: first.fontSize,
+        fontWeight: first.fontWeight,
+        bold: first.bold,
+        color: bulletColor,
+      });
+      paragraphText.unshift(prefix.text);
+      if (bullet.kind === "char") {
+        for (let ri = paraStart + 1; ri < runs.length; ri++) {
+          runs[ri].text = runs[ri].text.replace(/\n/g, `\n${prefix.text}`);
+        }
+        const rebuilt = runs.slice(paraStart).map((r) => r.text).join("");
+        paragraphText.length = 0;
+        paragraphText.push(rebuilt);
+      }
+    } else if (prefix.text && paraHasText && runs.length > paraStart) {
       runs[paraStart].text = prefix.text + runs[paraStart].text;
       paragraphText.unshift(prefix.text);
       // think-cell encodes a multi-item callout as ONE bulleted paragraph with
@@ -4314,6 +4550,19 @@ function resolveBullet(sources: (any | undefined)[]): ResolvedBullet {
     }
   }
   return { kind: "none" };
+}
+
+/** `<a:buClr>` from the first inheritance layer that sets one (`buClrTx` = text colour → none). */
+function resolveBulletColor(
+  sources: (any | undefined)[],
+  theme: ThemeColors
+): string | undefined {
+  for (const src of sources) {
+    if (!src) continue;
+    if (src["a:buClrTx"] !== undefined) return undefined;
+    if (src["a:buClr"] !== undefined) return resolveColor(src["a:buClr"], theme);
+  }
+  return undefined;
 }
 
 function computeBulletPrefix(
@@ -4438,7 +4687,15 @@ function buildRunInfo(
     rPr?.["a:latin"]?.["@_typeface"] ??
     fallbackRPr?.["a:latin"]?.["@_typeface"];
   const fontFamily = resolveFontFamily(rawFontFamily, themeFonts);
+  // PowerPoint draws a hyperlink run underlined in the theme's hyperlink colour
+  // whatever its own fill says, unless the link carries the
+  // `ahyp:hlinkClr val="tx"` extension ("use the text colour").
+  const hlink = rPr?.["a:hlinkClick"];
+  const isHyperlink = hlink !== undefined;
+  const linkUsesTextColour =
+    isHyperlink && /"@_val":"tx"/.test(JSON.stringify(hlink?.["a:extLst"] ?? ""));
   const color =
+    (isHyperlink && !linkUsesTextColour ? theme.hlink : undefined) ??
     resolveColor(rPr?.["a:solidFill"], theme) ??
     resolveColor(fallbackRPr?.["a:solidFill"], theme);
   // <a:highlight> wraps a colour child (srgbClr/schemeClr) just like a fill,
@@ -4451,6 +4708,9 @@ function buildRunInfo(
   const underlineVal = rPr?.["@_u"] ?? fallbackRPr?.["@_u"];
   const strikeVal = rPr?.["@_strike"] ?? fallbackRPr?.["@_strike"];
   const capVal = rPr?.["@_cap"] ?? fallbackRPr?.["@_cap"];
+  const baselineRaw = Number(rPr?.["@_baseline"] ?? fallbackRPr?.["@_baseline"]);
+  const baseline =
+    Number.isFinite(baselineRaw) && baselineRaw !== 0 ? baselineRaw / 1000 : undefined;
   return {
     text,
     run: {
@@ -4463,12 +4723,13 @@ function buildRunInfo(
         boldVal === undefined ? undefined : boldVal === "1" || boldVal === 1
       ),
       italic: italicVal === "1" || italicVal === 1,
-      underline: !!(underlineVal && underlineVal !== "none"),
+      underline: isHyperlink || !!(underlineVal && underlineVal !== "none"),
       strike: strikeVal === "sngStrike",
       color,
       letterSpacing,
       highlight,
       cap: capVal === "all" || capVal === "small" ? capVal : undefined,
+      baseline,
     },
   };
 }
@@ -5064,7 +5325,6 @@ function mapPrstToKind(prst?: string): ShapeKind | null {
     // Loose mappings — preserve visibility with the closest available kind.
     case "parallelogram":
     case "trapezoid":
-    case "hexagon":
     case "pentagon":
     case "octagon":
     case "heptagon":
@@ -5084,8 +5344,6 @@ function mapPrstToKind(prst?: string): ShapeKind | null {
     case "callout1":
     case "callout2":
     case "callout3":
-    case "wedgeRectCallout":
-    case "wedgeRoundRectCallout":
     case "flowChartProcess":
     case "flowChartDecision":
     case "flowChartTerminator":

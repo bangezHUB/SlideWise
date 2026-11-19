@@ -286,7 +286,7 @@ function renderText(el: Extract<SlideElement, { type: "text" }>): string {
 
 function textParagraphs(
   el: Extract<SlideElement, { type: "text" }>
-): { text: string; align?: "left" | "center" | "right"; color?: string }[] {
+): { text: string; align?: "left" | "center" | "right" | "justify"; color?: string }[] {
   if (el.paragraphs && el.paragraphs.length) {
     return el.paragraphs.map((p) => ({
       text: p.runs?.length ? p.runs.map((r) => r.text).join("") : p.text,
@@ -396,7 +396,7 @@ function renderImage(el: Extract<SlideElement, { type: "image" }>): string {
     : "";
   return (
     `<image x="${round(el.x)}" y="${round(el.y)}" width="${round(el.w)}" height="${round(el.h)}" ` +
-    `preserveAspectRatio="${preserve}"${clip} xlink:href="${escAttr(el.src)}"/>`
+    `preserveAspectRatio="${preserve}"${clip}${el.opacity !== undefined ? ` opacity="${round(el.opacity)}"` : ""} xlink:href="${escAttr(el.src)}"/>`
   );
 }
 

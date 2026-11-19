@@ -11,6 +11,7 @@ import type {
   IconElement,
   EmbedElement,
   ChartElement,
+  ArrowheadKind,
   ConnectorElement,
   GroupElement,
   DiagramElement,
@@ -262,6 +263,21 @@ function TextView({
     wordBreak: el.noWrap ? "normal" : "break-word",
     outline: "none",
   };
+  if (el.vertical) {
+    // Vertical text: lines stack sideways, so the box is laid out as a row and
+    // the text block fills its height. `vert270` is the same flow turned 180°.
+    inner.writingMode = "vertical-rl";
+    inner.width = "auto";
+    inner.height = "100%";
+    if (el.vertical === "vert270") inner.transform = "rotate(180deg)";
+    outer.flexDirection = "row";
+    // The anchor picks the side lines start from: right for `vert`, left for
+    // `vert270` (after its half turn).
+    const start = el.vertical === "vert" ? "flex-end" : "flex-start";
+    const end = el.vertical === "vert" ? "flex-start" : "flex-end";
+    outer.justifyContent =
+      el.vAlign === "top" ? start : el.vAlign === "middle" ? "center" : end;
+  }
 
   const backingPath = el.backingPath;
   const positionedOuter: React.CSSProperties = backingPath
@@ -284,6 +300,8 @@ function TextView({
         height: "100%",
         pointerEvents: "none",
         zIndex: 0,
+        // Outlines such as wedge callouts reach outside their box.
+        overflow: "visible",
       }}
     >
       {backingPaint.def && <defs>{backingPaint.def}</defs>}
@@ -429,10 +447,19 @@ function splitRunsByNewline(runs: TextRun[]): TextRun[][] {
   return lines;
 }
 
+/** PowerPoint draws super/subscript at about two thirds of the font size. */
+const BASELINE_SCALE = 0.66;
+
 function runCssStyle(r: TextRun): React.CSSProperties {
   const s: React.CSSProperties = {};
   if (r.fontFamily) s.fontFamily = withGenericFallback(r.fontFamily);
-  if (r.fontSize) s.fontSize = r.fontSize;
+  if (r.fontSize) s.fontSize = r.baseline ? r.fontSize * BASELINE_SCALE : r.fontSize;
+  else if (r.baseline) s.fontSize = `${BASELINE_SCALE * 100}%`;
+  if (r.baseline) {
+    s.verticalAlign = r.baseline > 0 ? "super" : "sub";
+    // Keep a raised/lowered run from stretching its line.
+    s.lineHeight = 0;
+  }
   if (r.fontWeight) s.fontWeight = r.fontWeight;
   if (r.color) s.color = r.color;
   if (r.highlight) {
@@ -535,7 +562,12 @@ function runsToHtml(runs: TextRun[]): string {
       const props: string[] = [];
       if (r.color) props.push(`color: ${r.color}`);
       if (r.fontFamily) props.push(`font-family: ${r.fontFamily}`);
-      if (r.fontSize) props.push(`font-size: ${r.fontSize}px`);
+      if (r.fontSize) {
+        props.push(
+          `font-size: ${r.baseline ? +(r.fontSize * BASELINE_SCALE).toFixed(2) : r.fontSize}px`
+        );
+      }
+      if (r.baseline) props.push(`vertical-align: ${r.baseline > 0 ? "super" : "sub"}`);
       if (r.fontWeight) props.push(`font-weight: ${r.fontWeight}`);
       if (r.italic) props.push(`font-style: italic`);
       if (r.cap === "all") props.push(`text-transform: uppercase`);
@@ -563,6 +595,11 @@ function styleToRun(el: HTMLElement, text: string): TextRun {
   if (s.fontSize) {
     const px = parseFloat(s.fontSize);
     if (Number.isFinite(px)) r.fontSize = px;
+  }
+  if (s.verticalAlign === "super" || s.verticalAlign === "sub") {
+    r.baseline = s.verticalAlign === "super" ? 30 : -25;
+    // The editing HTML carries the shrunken size; store the full one.
+    if (r.fontSize) r.fontSize = Math.round((r.fontSize / BASELINE_SCALE) * 100) / 100;
   }
   if (s.fontWeight) {
     const w = parseInt(s.fontWeight, 10);
@@ -634,6 +671,7 @@ function sameStyle(a: TextRun, b: TextRun): boolean {
     a.strike === b.strike &&
     a.highlight === b.highlight &&
     a.cap === b.cap &&
+    a.baseline === b.baseline &&
     a.letterSpacing === b.letterSpacing
   );
 }
@@ -914,7 +952,9 @@ function ShapeView({ el }: { el: ShapeElement }) {
         preserveAspectRatio="none"
         width="100%"
         height="100%"
-        style={effect}
+        // Visible overflow: outlines such as wedge callouts reach outside
+        // their box with a pointer.
+        style={{ overflow: "visible", ...effect }}
       >
         {def && <defs>{def}</defs>}
         <path
@@ -1040,6 +1080,7 @@ function ImageView({ el }: { el: ImageElement }) {
           backgroundSize: `${sizeX}% ${sizeY}%`,
           backgroundPosition: `${posX}% ${posY}%`,
           backgroundRepeat: "no-repeat",
+          opacity: el.opacity,
         }}
       />
     );
@@ -1063,6 +1104,7 @@ function ImageView({ el }: { el: ImageElement }) {
           objectFit: el.fit,
           display: "block",
           userSelect: "none",
+          opacity: el.opacity,
         }}
       />
     </div>
@@ -1080,6 +1122,14 @@ function LineView({ el }: { el: LineElement }) {
   const y1 = el.h < 0 ? ah : 0;
   const x2 = el.w < 0 ? 0 : aw;
   const y2 = el.h < 0 ? 0 : ah;
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const startId = `ln-s-${uid}`;
+  const endId = `ln-e-${uid}`;
+  // Per-end arrowheads (`<a:headEnd>` / `<a:tailEnd>`) replace the legacy
+  // end-only triangle.
+  const hasStart = !!el.startArrow && el.startArrow !== "none";
+  const hasEnd = !!el.endArrow && el.endArrow !== "none";
+  const perEnd = hasStart || hasEnd;
   return (
     <svg
       viewBox={`0 0 ${aw} ${ah}`}
@@ -1088,7 +1138,17 @@ function LineView({ el }: { el: LineElement }) {
       height="100%"
       style={{ overflow: "visible", ...effectStyle(el.shadow, el.glow, "filter") }}
     >
+      {perEnd && (
+        <defs>
+          {hasStart && (
+            <ArrowMarker id={startId} color={el.stroke} orient="auto-start-reverse" kind={el.startArrow} />
+          )}
+          {hasEnd && <ArrowMarker id={endId} color={el.stroke} orient="auto" kind={el.endArrow} />}
+        </defs>
+      )}
       <line
+        markerStart={hasStart ? `url(#${startId})` : undefined}
+        markerEnd={hasEnd ? `url(#${endId})` : undefined}
         x1={x1}
         y1={y1}
         x2={x2}
@@ -1102,7 +1162,7 @@ function LineView({ el }: { el: LineElement }) {
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
       />
-      {el.arrow && (
+      {el.arrow && !perEnd && (
         <polygon
           points={`${x2},${y2} ${x2 - 18},${y2 - 9} ${x2 - 18},${y2 + 9}`}
           fill={el.stroke}
@@ -1152,8 +1212,10 @@ function ConnectorView({ el }: { el: ConnectorElement }) {
       style={{ overflow: "visible", ...effectStyle(el.shadow, el.glow, "filter") }}
     >
       <defs>
-        {hasStart && <ArrowMarker id={startId} color={el.stroke} orient="auto-start-reverse" />}
-        {hasEnd && <ArrowMarker id={endId} color={el.stroke} orient="auto" />}
+        {hasStart && (
+          <ArrowMarker id={startId} color={el.stroke} orient="auto-start-reverse" kind={el.startArrow} />
+        )}
+        {hasEnd && <ArrowMarker id={endId} color={el.stroke} orient="auto" kind={el.endArrow} />}
       </defs>
       <path
         d={d}
@@ -1177,23 +1239,36 @@ function ArrowMarker({
   id,
   color,
   orient,
+  kind,
 }: {
   id: string;
   color: string;
   orient: string;
+  kind?: ArrowheadKind;
 }) {
+  // Oval and diamond heads are centred on the line end; the pointed heads
+  // have their tip on it.
+  const centred = kind === "oval" || kind === "diamond";
   return (
     <marker
       id={id}
       viewBox="0 0 10 10"
-      refX="9"
+      refX={centred ? 5 : 9}
       refY="5"
       markerWidth="7"
       markerHeight="7"
       orient={orient}
       markerUnits="strokeWidth"
     >
-      <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+      {kind === "oval" ? (
+        <circle cx="5" cy="5" r="5" fill={color} />
+      ) : kind === "diamond" ? (
+        <path d="M 5 0 L 10 5 L 5 10 L 0 5 z" fill={color} />
+      ) : kind === "stealth" ? (
+        <path d="M 0 0 L 10 5 L 0 10 L 3 5 z" fill={color} />
+      ) : (
+        <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+      )}
     </marker>
   );
 }

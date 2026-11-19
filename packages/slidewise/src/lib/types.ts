@@ -102,6 +102,12 @@ export interface TextRun {
    * a placeholder's list style rather than set on the run.
    */
   cap?: "all" | "small";
+  /**
+   * Vertical shift from OOXML `<a:rPr baseline="…">`, as a percentage of the
+   * font size: positive raises the run (superscript, PowerPoint uses 30),
+   * negative lowers it (subscript, -25). Unset means no shift.
+   */
+  baseline?: number;
 }
 
 export interface TextElement extends BaseElement {
@@ -118,7 +124,7 @@ export interface TextElement extends BaseElement {
   underline: boolean;
   strike: boolean;
   color: string;
-  align: "left" | "center" | "right";
+  align: "left" | "center" | "right" | "justify";
   vAlign: "top" | "middle" | "bottom";
   lineHeight: number;
   letterSpacing: number;
@@ -148,6 +154,13 @@ export interface TextElement extends BaseElement {
    * wrapping content the original kept on one line.
    */
   noWrap?: boolean;
+  /**
+   * Vertical text direction from `<a:bodyPr vert="…">`: `"vert"` reads top to
+   * bottom with lines stacking right to left (also used for `eaVert` /
+   * `wordArtVert`); `"vert270"` reads bottom to top with lines stacking left to
+   * right. Unset means normal horizontal text.
+   */
+  vertical?: "vert" | "vert270";
   /**
    * Optional vector glyph drawn behind the text. Set by the PPTX importer
    * when the layout placeholder carried an `<a:custGeom>` (typically a
@@ -193,7 +206,7 @@ export interface TextElement extends BaseElement {
     text: string;
     marL?: number;
     indent?: number;
-    align?: "left" | "center" | "right";
+    align?: "left" | "center" | "right" | "justify";
     runs?: TextRun[];
     /** Space before paragraph in canvas pixels (from PPTX `<a:spcBef>`). */
     spaceBefore?: number;
@@ -286,6 +299,11 @@ export interface ImageElement extends BaseElement {
    * final paint matches PowerPoint's "crop + stretch" behaviour.
    */
   crop?: { l: number; r: number; t: number; b: number };
+  /**
+   * Picture opacity, 0 (invisible) .. 1 (opaque; the default when unset).
+   * Maps to `<a:blip><a:alphaModFix amt>` in OOXML ("Picture Transparency").
+   */
+  opacity?: number;
 }
 
 export interface LineElement extends BaseElement {
@@ -293,6 +311,13 @@ export interface LineElement extends BaseElement {
   stroke: string;
   strokeWidth: number;
   arrow?: boolean;
+  /**
+   * Arrowhead at the start / end of the line (`<a:headEnd>` / `<a:tailEnd>`).
+   * When either is set the renderer draws these instead of the legacy `arrow`
+   * triangle.
+   */
+  startArrow?: ArrowheadKind;
+  endArrow?: ArrowheadKind;
   /** Legacy convenience flag — equivalent to `dashType: "dash"`. */
   dashed?: boolean;
   /** Detailed dash pattern. When set, takes precedence over `dashed`. */
@@ -462,7 +487,16 @@ export interface UnknownElement extends BaseElement {
 }
 
 /** Discrete chart families the renderer knows how to draw. */
-export type ChartKind = "bar" | "column" | "line" | "pie" | "doughnut" | "area";
+export type ChartKind =
+  | "bar"
+  | "column"
+  | "line"
+  | "pie"
+  | "doughnut"
+  | "area"
+  | "scatter"
+  | "bubble"
+  | "radar";
 
 /** Bar/column grouping mode. PPTX values: standard / stacked / percentStacked. */
 export type ChartGrouping = "standard" | "stacked" | "percentStacked";
@@ -491,6 +525,17 @@ export interface ChartSeries {
    * series colour.
    */
   pointColors?: (string | null)[];
+  /**
+   * Scatter / bubble charts: the x coordinate of each point, parallel to
+   * `values` (which then hold the y coordinates). `<c:xVal>` in OOXML.
+   */
+  xValues?: (number | null)[];
+  /** Bubble charts: the size of each bubble, parallel to `values` (`<c:bubbleSize>`). */
+  sizes?: (number | null)[];
+  /** Line width in canvas pixels (`<c:spPr><a:ln w>`) for line, scatter and radar series. */
+  lineWidth?: number;
+  /** Scatter charts: join the points with a line (`scatterStyle` with a drawn `<a:ln>`). */
+  lines?: boolean;
 }
 
 /** Value-axis settings from `<c:valAx>`. Absent bounds are automatic. */
@@ -533,8 +578,16 @@ export interface ChartElement extends BaseElement {
   valueFormat?: string;
   /** Category axis of bar / column / line / area charts. */
   categoryAxis?: ChartCategoryAxis;
-  /** Primary value axis of bar / column / line / area charts. */
+  /** Primary value axis of bar / column / line / area charts (the y axis of scatter / bubble charts). */
   valueAxis?: ChartValueAxis;
+  /** `false` when the source chart has no `<c:legend>`; unset means a legend is shown. */
+  showLegend?: boolean;
+  /** Legend side from `<c:legendPos>`: top, bottom, left or right. Unset: bottom. */
+  legendPosition?: "t" | "b" | "l" | "r";
+  /** Horizontal value axis of scatter / bubble charts. */
+  xAxis?: ChartValueAxis;
+  /** Radar charts: areas are filled (`<c:radarStyle val="filled"/>`). */
+  radarFilled?: boolean;
   /** Secondary value axis, used by series with `secondaryAxis` (combo charts). */
   secondaryValueAxis?: ChartValueAxis;
   /**
@@ -706,6 +759,28 @@ export interface Slide {
    * `sourceSlideIndex` / positional fallback.
    */
   sourceLayoutId?: string;
+  /**
+   * True for a slide marked hidden in the source (`<p:sld show="0">`). It stays
+   * in the editor but is skipped by Play mode, as in PowerPoint.
+   */
+  hidden?: boolean;
+  /**
+   * Plain-text speaker notes from the slide's notes page (`ppt/notesSlides`),
+   * paragraphs separated by `\n`. Read-only: not written back.
+   */
+  notes?: string;
+  /** Transition into this slide (`<p:transition>`); Play mode animates it. */
+  transition?: SlideTransition;
+}
+
+/** Slide transition read from `<p:transition>`. */
+export interface SlideTransition {
+  /** The transition element's name without prefix: `fade`, `push`, `wipe`, `cover`, `pull`, `split`, … */
+  type: string;
+  /** Direction of motion for sliding transitions: `l`, `r`, `u` or `d`. */
+  direction?: "l" | "r" | "u" | "d";
+  /** `<p:transition spd>`: `slow`, `med` or `fast`. */
+  speed?: "slow" | "med" | "fast";
 }
 
 /**
@@ -770,7 +845,7 @@ export interface LayoutPlaceholder {
   /** Default text colour (CSS hex) resolved from the list style, if any. */
   color?: string;
   /** Default horizontal alignment, if the list style fixes one. */
-  align?: "left" | "center" | "right";
+  align?: "left" | "center" | "right" | "justify";
 }
 
 /**

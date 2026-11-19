@@ -1,12 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { useEditor } from "@/lib/StoreProvider";
 import { SLIDE_W, SLIDE_H, type SlideElement, type EnterAnim } from "@/lib/types";
+import { playableSlides } from "@/lib/playableSlides";
+import { enterMotion } from "@/lib/slideTransition";
 import { ElementView } from "./ElementView";
 
 export function PlayMode() {
-  const slides = useEditor((s) => s.deck.slides);
+  const allSlides = useEditor((s) => s.deck.slides);
+  const slides = useMemo(() => playableSlides(allSlides), [allSlides]);
   const stop = useEditor((s) => s.stop);
   const [index, setIndex] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -37,6 +40,7 @@ export function PlayMode() {
   }, [slides.length, stop]);
 
   const slide = slides[index];
+  const enter = enterMotion(slide.transition, SLIDE_W * scale, SLIDE_H * scale);
 
   return (
     <div
@@ -157,10 +161,10 @@ export function PlayMode() {
       <AnimatePresence mode="wait">
         <motion.div
           key={slide.id}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
+          initial={enter.initial}
+          animate={{ opacity: 1, x: 0, y: 0 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.35 }}
+          transition={{ duration: enter.duration }}
           style={{
             width: SLIDE_W * scale,
             height: SLIDE_H * scale,

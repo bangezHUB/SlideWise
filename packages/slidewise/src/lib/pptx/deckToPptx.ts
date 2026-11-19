@@ -471,7 +471,7 @@ function shouldSynthesise(el: SlideElement): boolean {
   // URLs keep pptxgenjs's (crop/radius is dropped for those — see addImage).
   if (
     el.type === "image" &&
-    (hasCrop(el.crop) || (el.radius ?? 0) > 0) &&
+    (hasCrop(el.crop) || (el.radius ?? 0) > 0 || (el.opacity ?? 1) < 1) &&
     isDataUrl(el.src)
   ) {
     return true;
@@ -696,6 +696,7 @@ function addText(
     strike: el.strike ? ("sngStrike" as const) : undefined,
     align: el.align,
     valign: el.vAlign,
+    vert: el.vertical,
     fill: bgHex ? { color: bgHex } : undefined,
     charSpacing: el.letterSpacing
       ? Math.round(el.letterSpacing * 100)
@@ -736,6 +737,8 @@ function addText(
             : undefined,
           strike: (r.strike ?? el.strike) ? ("sngStrike" as const) : undefined,
           highlight: r.highlight ? hexNoHash(r.highlight) : undefined,
+          superscript: (r.baseline ?? 0) > 0 ? true : undefined,
+          subscript: (r.baseline ?? 0) < 0 ? true : undefined,
           charSpacing: r.letterSpacing ?? el.letterSpacing
             ? Math.round((r.letterSpacing ?? el.letterSpacing) * 100)
             : undefined,

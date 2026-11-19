@@ -44,7 +44,7 @@ export function buildChartOption(el: ChartElement): EChartsOption {
       color: el.categories.map((_, i) => sliceColor(i)),
       title: el.title ? { text: el.title, left: "center", top: 4 } : undefined,
       tooltip: { trigger: "item", valueFormatter },
-      legend: { bottom: 4 },
+      legend: legendOption(el),
       series: [
         {
           type: "pie",
@@ -56,6 +56,13 @@ export function buildChartOption(el: ChartElement): EChartsOption {
         },
       ],
     } as EChartsOption;
+  }
+
+  if (el.kind === "scatter" || el.kind === "bubble") {
+    return buildXyOption(el, palette, labelFormatter, valueFormatter);
+  }
+  if (el.kind === "radar") {
+    return buildRadarOption(el, palette, labelFormatter, valueFormatter);
   }
 
   const isHorizontal = el.kind === "bar"; // "column" + everything else: vertical
@@ -131,7 +138,11 @@ export function buildChartOption(el: ChartElement): EChartsOption {
       itemStyle: { color },
       ...(kind === "area" ? { areaStyle: { color } } : {}),
       ...(kind === "line"
-        ? { lineStyle: { color }, symbol: "circle", symbolSize: 6 }
+        ? {
+            lineStyle: { color, ...(s.lineWidth ? { width: s.lineWidth } : {}) },
+            symbol: "circle",
+            symbolSize: 6,
+          }
         : {}),
       ...(stackKey ? { stack: stackKey } : {}),
       ...(s.secondaryAxis && hasSecondary
@@ -157,16 +168,144 @@ export function buildChartOption(el: ChartElement): EChartsOption {
     color: palette,
     title: el.title ? { text: el.title, left: "center", top: 4 } : undefined,
     tooltip: { trigger: "axis", valueFormatter },
-    legend: { bottom: 4, type: "scroll" },
+    legend: legendOption(el, true),
     grid: {
-      left: 56,
-      right: hasSecondary && !isHorizontal ? 56 : 24,
-      top: (el.title ? 36 : 16) + (hasSecondary && isHorizontal ? 24 : 0),
+      left: 56 + (el.showLegend !== false && el.legendPosition === "l" ? 90 : 0),
+      right:
+        (hasSecondary && !isHorizontal ? 56 : 24) +
+        (el.showLegend !== false && el.legendPosition === "r" ? 90 : 0),
+      top:
+        (el.title ? 36 : 16) +
+        (hasSecondary && isHorizontal ? 24 : 0) +
+        (el.showLegend !== false && el.legendPosition === "t" ? 24 : 0),
       bottom: 56,
     },
     xAxis,
     yAxis,
     series,
+  } as EChartsOption;
+}
+
+/** ECharts legend for the chart's legend settings (hidden, or placed by side). */
+function legendOption(el: ChartElement, scroll = false) {
+  if (el.showLegend === false) return { show: false };
+  const type = scroll ? { type: "scroll" as const } : {};
+  switch (el.legendPosition) {
+    case "t":
+      return { top: el.title ? 30 : 4, ...type };
+    case "l":
+      return { left: 4, top: "middle", orient: "vertical" as const, ...type };
+    case "r":
+      return { right: 4, top: "middle", orient: "vertical" as const, ...type };
+    default:
+      return { bottom: 4, ...type };
+  }
+}
+
+const isNum = (n: number | null | undefined): n is number =>
+  typeof n === "number" && Number.isFinite(n);
+
+function xyAxis(axis: ChartValueAxis | undefined) {
+  return {
+    type: "value" as const,
+    ...(axis?.min !== undefined ? { min: axis.min } : {}),
+    ...(axis?.max !== undefined ? { max: axis.max } : {}),
+    ...(axis?.hidden ? { show: false } : {}),
+  };
+}
+
+/** Scatter and bubble charts: value axes and `[x, y(, size)]` points. */
+function buildXyOption(
+  el: ChartElement,
+  palette: string[],
+  labelFormatter: (v: number) => string,
+  valueFormatter: (v: number) => string
+): EChartsOption {
+  const isBubble = el.kind === "bubble";
+  const maxSize = Math.max(
+    1,
+    ...el.series.flatMap((s) => (s.sizes ?? []).filter(isNum))
+  );
+  const series = el.series.map((s) => {
+    const data: number[][] = [];
+    s.values.forEach((y, i) => {
+      const x = s.xValues?.[i];
+      if (!isNum(x) || !isNum(y)) return;
+      const size = s.sizes?.[i];
+      data.push(isBubble ? [x, y, isNum(size) ? size : 0] : [x, y]);
+    });
+    return {
+      name: s.name,
+      type: s.lines && !isBubble ? "line" : "scatter",
+      data,
+      ...(isBubble
+        ? {
+            // Area proportional to the value: radius ~ sqrt(size).
+            symbolSize: (d: number[]) => 8 + 42 * Math.sqrt(Math.max(0, d[2]) / maxSize),
+          }
+        : { symbolSize: 8 }),
+      itemStyle: { color: s.color ?? undefined, ...(isBubble ? { opacity: 0.7 } : {}) },
+      ...(s.lines && !isBubble ? { lineStyle: { color: s.color ?? undefined } } : {}),
+      label: el.showDataLabels
+        ? {
+            show: true,
+            position: "top",
+            fontSize: 11,
+            formatter: (p: { value: number[] }) => labelFormatter(p.value[1]),
+          }
+        : { show: false },
+    };
+  });
+  return {
+    color: palette,
+    title: el.title ? { text: el.title, left: "center", top: 4 } : undefined,
+    tooltip: { trigger: "item", valueFormatter },
+    legend: legendOption(el, true),
+    grid: { left: 56, right: 24, top: el.title ? 36 : 16, bottom: 56 },
+    xAxis: xyAxis(el.xAxis),
+    yAxis: xyAxis(el.valueAxis),
+    series,
+  } as EChartsOption;
+}
+
+/** Radar charts: one indicator per category, one polygon per series. */
+function buildRadarOption(
+  el: ChartElement,
+  palette: string[],
+  labelFormatter: (v: number) => string,
+  valueFormatter: (v: number) => string
+): EChartsOption {
+  const all = el.series.flatMap((s) => s.values.filter(isNum));
+  const dataMax = all.length ? Math.max(...all) : 1;
+  const dataMin = all.length ? Math.min(...all) : 0;
+  const min = el.valueAxis?.min ?? Math.min(0, dataMin);
+  const max = el.valueAxis?.max ?? (dataMax > min ? dataMax * 1.1 : min + 1);
+  const data = el.series.map((s, i) => ({
+    name: s.name,
+    value: el.categories.map((_, ci) => s.values[ci] ?? 0),
+    itemStyle: { color: palette[i] },
+    lineStyle: { color: palette[i] },
+    ...(el.radarFilled ? { areaStyle: { color: palette[i], opacity: 0.35 } } : {}),
+  }));
+  return {
+    color: palette,
+    title: el.title ? { text: el.title, left: "center", top: 4 } : undefined,
+    tooltip: { trigger: "item", valueFormatter },
+    legend: legendOption(el, true),
+    radar: {
+      indicator: el.categories.map((name, i) => ({ name: name || `#${i + 1}`, min, max })),
+      center: ["50%", el.title ? "52%" : "47%"],
+      radius: "62%",
+    },
+    series: [
+      {
+        type: "radar",
+        data,
+        label: el.showDataLabels
+          ? { show: true, fontSize: 11, formatter: (p: { value: number }) => labelFormatter(p.value) }
+          : { show: false },
+      },
+    ],
   } as EChartsOption;
 }
 

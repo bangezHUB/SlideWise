@@ -320,6 +320,34 @@ describe("pptx importer — round 2", () => {
     expect(table.rowHeights).toEqual([300000, 900000]);
   });
 
+  it("grows the table frame to the sum of the row heights when cy is smaller", async () => {
+    const zip = baseZip();
+    zip.file(
+      "ppt/_rels/presentation.xml.rels",
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>`
+    );
+    const cell = (t: string) =>
+      `<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${t}</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>`;
+    const deckFor = async (cy: number) => {
+      zip.file(
+        "ppt/slides/slide1.xml",
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="2" name="t"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="6000000" cy="${cy}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr/><a:tblGrid><a:gridCol w="6000000"/></a:tblGrid><a:tr h="900000">${cell("A")}</a:tr><a:tr h="900000">${cell("B")}</a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+      );
+      zip.file(
+        "ppt/slides/_rels/slide1.xml.rels",
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`
+      );
+      const deck = await parsePptx(await zip.generateAsync({ type: "arraybuffer" }));
+      const t = deck.slides[0].elements.find((e) => e.type === "table");
+      return t!.h;
+    };
+    const small = await deckFor(914400); // frame smaller than 1,800,000 of rows
+    const exact = await deckFor(1800000);
+    const bigger = await deckFor(3600000); // a taller frame is kept as written
+    expect(small).toBeCloseTo(exact, 3);
+    expect(bigger).toBeGreaterThan(exact);
+  });
+
   it("keeps a bold header cell's weight and honours its centre anchor", async () => {
     const zip = baseZip();
     zip.file(
